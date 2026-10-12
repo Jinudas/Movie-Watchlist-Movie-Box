@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import MovieCard from "./components/moviecard1.jsx";
 import Login from "./components/login.jsx";
-import Register from "./components/Register.jsx";
+import Register from "./components/register.jsx";
 import movies from "./data/movies.js";
 import webSeries from "./data/webseries.jsx";
 import animation from "./data/animation.jsx";
 import "./App.css";
+
 const pages = [
   "Home",
   "Movies",
@@ -15,6 +16,7 @@ const pages = [
   "Register",
   "Login",
 ];
+
 const partners = [
   {
     name: "Paramount",
@@ -42,6 +44,37 @@ const partners = [
   },
 ];
 
+function mapDatabaseTitle(item) {
+  return {
+    ...item,
+    id: `database-${item.id}`,
+    poster: item.poster_url || "",
+    backdrop: item.backdrop_url || item.poster_url || "",
+    watchUrl: item.watch_url || "",
+    videoUrl: item.video_file || "",
+    upcoming: item.is_upcoming,
+    rank: item.trending_rank,
+  };
+}
+
+function mergeCatalog(localItems, databaseItems, category) {
+  const databaseForCategory = databaseItems.filter(
+    (item) => item.category === category
+  );
+
+  const databaseNames = new Set(
+    databaseForCategory.map((item) => item.title.trim().toLowerCase())
+  );
+
+  const localWithoutDuplicates = localItems
+    .map((item) => ({ ...item, category }))
+    .filter(
+      (item) => !databaseNames.has(item.title.trim().toLowerCase())
+    );
+
+  return [...databaseForCategory, ...localWithoutDuplicates];
+}
+
 function getSavedItems(key) {
   try {
     return JSON.parse(localStorage.getItem(key)) || [];
@@ -52,10 +85,13 @@ function getSavedItems(key) {
 
 export default function App() {
   const [activePage, setActivePage] = useState("Home");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [csrfToken, setCsrfToken] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("All");
   const [slide, setSlide] = useState(0);
+  const [databaseTitles, setDatabaseTitles] = useState([]);
   const [watchlist, setWatchlist] = useState(() =>
     getSavedItems("cinema-watchlist")
   );
@@ -63,19 +99,105 @@ export default function App() {
     getSavedItems("cinema-favorites")
   );
 
-  const allTitles = [...movies, ...webSeries, ...animation];
-  const upcomingMovies = movies.filter((movie) => movie.upcoming);
-  const genres = ["All", ...new Set(movies.map((movie) => movie.genre))];
+  const movieTitles = mergeCatalog(movies, databaseTitles, "movie");
+  const webSeriesTitles = mergeCatalog(
+    webSeries,
+    databaseTitles,
+    "webseries"
+  );
+  const animationTitles = mergeCatalog(
+    animation,
+    databaseTitles,
+    "animation"
+  );
+
+  const allTitles = [
+    ...movieTitles,
+    ...webSeriesTitles,
+    ...animationTitles,
+  ];
+
+  const upcomingMovies = movieTitles.filter((movie) => movie.upcoming);
+  const genres = [
+    "All",
+    ...new Set(movieTitles.map((movie) => movie.genre).filter(Boolean)),
+  ];
 
   useEffect(() => {
-    if (movies.length === 0) return undefined;
+    let ignoreResult = false;
+
+    async function restoreLogin() {
+      try {
+        const response = await fetch("/api/me/", {
+          credentials: "same-origin",
+        });
+
+        if (!response.ok) return;
+
+        const data = await response.json();
+
+        if (!ignoreResult) {
+          setCurrentUser(data.user);
+          setCsrfToken(data.csrfToken);
+        }
+      } catch (error) {
+        console.error("Could not restore the login session:", error);
+      }
+    }
+
+    restoreLogin();
+
+    return () => {
+      ignoreResult = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let ignoreResult = false;
+
+    async function loadDatabaseTitles() {
+      try {
+        const response = await fetch("/api/movies/");
+
+        if (!response.ok) {
+          throw new Error(`Movie request failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (!Array.isArray(data)) {
+          throw new Error("The movie API did not return a list.");
+        }
+
+        if (!ignoreResult) {
+          setDatabaseTitles(data.map(mapDatabaseTitle));
+        }
+      } catch (error) {
+        console.error("Could not load movies from Django:", error);
+      }
+    }
+
+    loadDatabaseTitles();
+
+    return () => {
+      ignoreResult = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const movieCount = movieTitles.length;
+
+    if (movieCount === 0) {
+      setSlide(0);
+      return undefined;
+    }
 
     const timer = setInterval(() => {
-      setSlide((currentSlide) => (currentSlide + 1) % movies.length);
+      setSlide((currentSlide) => (currentSlide + 1) % movieCount);
     }, 4000);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [movieTitles.length]);
 
   useEffect(() => {
     localStorage.setItem("cinema-watchlist", JSON.stringify(watchlist));
@@ -85,16 +207,19 @@ export default function App() {
     localStorage.setItem("cinema-favorites", JSON.stringify(favorites));
   }, [favorites]);
 
-  const featuredMovie = movies[slide];
+  const featuredMovie =
+    movieTitles.length > 0
+      ? movieTitles[slide % movieTitles.length]
+      : null;
 
-  let pageTitles = movies;
+  let pageTitles = movieTitles;
 
   if (activePage === "Movies") {
-    pageTitles = movies;
+    pageTitles = movieTitles;
   } else if (activePage === "Web Series") {
-    pageTitles = webSeries;
+    pageTitles = webSeriesTitles;
   } else if (activePage === "Animation") {
-    pageTitles = animation;
+    pageTitles = animationTitles;
   } else if (activePage === "Favorites") {
     pageTitles = allTitles.filter((title) => favorites.includes(title.id));
   }
@@ -111,6 +236,38 @@ export default function App() {
 
     return matchesGenre && matchesSearch;
   });
+
+  function handleLoginSuccess(user, token) {
+    setCurrentUser(user);
+    setCsrfToken(token);
+    setActivePage("Home");
+    setMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleLogout() {
+    try {
+      const response = await fetch("/api/logout/", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "X-CSRFToken": csrfToken,
+        },
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not log out.");
+      }
+
+      setCurrentUser(null);
+      setCsrfToken("");
+      setActivePage("Home");
+    } catch (error) {
+      alert(error.message || "Could not connect to the server.");
+    }
+  }
 
   function toggleItem(list, setList, id) {
     setList(
@@ -156,6 +313,21 @@ export default function App() {
         >
           <span>▶</span> MOVIE BOX
         </button>
+
+        {currentUser && (
+          <>
+            <span className="account-name">
+              Hi, {currentUser.name || currentUser.email}
+            </span>
+            <button
+              className="logout-button"
+              type="button"
+              onClick={handleLogout}
+            >
+              Log out
+            </button>
+          </>
+        )}
 
         {!isAuthPage && (
           <input
@@ -205,14 +377,17 @@ export default function App() {
       </aside>
 
       {activePage === "Login" ? (
-        <Login onSwitchPage={setActivePage} />
+        <Login
+          onSwitchPage={setActivePage}
+          onLoginSuccess={handleLoginSuccess}
+        />
       ) : activePage === "Register" ? (
         <Register onSwitchPage={setActivePage} />
       ) : (
         <main>
           {activePage === "Home" && featuredMovie && (
             <section
-              key={slide}
+              key={featuredMovie.id}
               className="hero"
               style={{
                 backgroundImage: `url("${featuredMovie.backdrop}")`,
@@ -239,7 +414,7 @@ export default function App() {
                   role="group"
                   aria-label="Choose featured movie"
                 >
-                  {movies.map((movie, index) => (
+                  {movieTitles.map((movie, index) => (
                     <button
                       key={movie.id}
                       type="button"
@@ -395,9 +570,7 @@ export default function App() {
               <section className="features-section">
                 <div className="features-grid">
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">
-                      🌍
-                    </span>
+                    <span className="feature-symbol" aria-hidden="true">🌍</span>
                     <h3>Works Worldwide</h3>
                     <p>
                       Discover movies and shows from countries around the
@@ -406,9 +579,7 @@ export default function App() {
                   </article>
 
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">
-                      🎬
-                    </span>
+                    <span className="feature-symbol" aria-hidden="true">🎬</span>
                     <h3>Thousands of Titles</h3>
                     <p>
                       Browse movies, shows, documentaries, sports, and more.
@@ -416,17 +587,13 @@ export default function App() {
                   </article>
 
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">
-                      ✓
-                    </span>
+                    <span className="feature-symbol" aria-hidden="true">✓</span>
                     <h3>Always 100% Free</h3>
                     <p>Explore titles without a payment or subscription.</p>
                   </article>
 
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">
-                      📱
-                    </span>
+                    <span className="feature-symbol" aria-hidden="true">📱</span>
                     <h3>Device-Friendly</h3>
                     <p>
                       Enjoy MovieBox on phones, tablets, computers, and TVs.
@@ -460,26 +627,16 @@ export default function App() {
                   className="streaming-platforms"
                   aria-label="Streaming platforms"
                 >
-                  <span className="platform-badge platform-netflix">
-                    Netflix
-                  </span>
-                  <span className="platform-badge platform-prime">
-                    prime video
-                  </span>
-                  <span className="platform-badge platform-disney">
-                    Disney+
-                  </span>
-                  <span className="platform-badge platform-apple">
-                    Apple TV+
-                  </span>
+                  <span className="platform-badge platform-netflix">Netflix</span>
+                  <span className="platform-badge platform-prime">prime video</span>
+                  <span className="platform-badge platform-disney">Disney+</span>
+                  <span className="platform-badge platform-apple">Apple TV+</span>
                   <span className="platform-badge platform-max">Max</span>
                   <span className="platform-badge platform-hulu">hulu</span>
                   <span className="platform-badge platform-paramount">
                     Paramount+
                   </span>
-                  <span className="platform-badge platform-peacock">
-                    peacock
-                  </span>
+                  <span className="platform-badge platform-peacock">peacock</span>
                 </div>
               </section>
 
@@ -555,9 +712,7 @@ export default function App() {
             <button
               type="button"
               className="footer-top-link"
-              onClick={() =>
-                window.scrollTo({ top: 0, behavior: "smooth" })
-              }
+              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
             >
               Back to top ↑
             </button>
