@@ -13,6 +13,7 @@ const pages = [
   "Web Series",
   "Animation",
   "Favorites",
+  "Watch History",
   "Register",
   "Login",
 ];
@@ -47,6 +48,7 @@ const partners = [
 function mapDatabaseTitle(item) {
   return {
     ...item,
+    databaseId: item.id,
     id: `database-${item.id}`,
     poster: item.poster_url || "",
     backdrop: item.backdrop_url || item.poster_url || "",
@@ -75,11 +77,17 @@ function mergeCatalog(localItems, databaseItems, category) {
   return [...databaseForCategory, ...localWithoutDuplicates];
 }
 
-function getSavedItems(key) {
+async function readResponse(response) {
+  const text = await response.text();
+
+  if (!text) {
+    return {};
+  }
+
   try {
-    return JSON.parse(localStorage.getItem(key)) || [];
+    return JSON.parse(text);
   } catch {
-    return [];
+    throw new Error("The server returned a response that was not JSON.");
   }
 }
 
@@ -91,13 +99,11 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [selectedGenre, setSelectedGenre] = useState("All");
   const [slide, setSlide] = useState(0);
+
   const [databaseTitles, setDatabaseTitles] = useState([]);
-  const [watchlist, setWatchlist] = useState(() =>
-    getSavedItems("cinema-watchlist")
-  );
-  const [favorites, setFavorites] = useState(() =>
-    getSavedItems("cinema-favorites")
-  );
+  const [watchlist, setWatchlist] = useState([]);
+  const [favorites, setFavorites] = useState([]);
+  const [watchHistory, setWatchHistory] = useState([]);
 
   const movieTitles = mergeCatalog(movies, databaseTitles, "movie");
   const webSeriesTitles = mergeCatalog(
@@ -132,13 +138,15 @@ export default function App() {
           credentials: "same-origin",
         });
 
-        if (!response.ok) return;
+        if (!response.ok) {
+          return;
+        }
 
-        const data = await response.json();
+        const data = await readResponse(response);
 
         if (!ignoreResult) {
           setCurrentUser(data.user);
-          setCsrfToken(data.csrfToken);
+          setCsrfToken(data.csrfToken || "");
         }
       } catch (error) {
         console.error("Could not restore the login session:", error);
@@ -163,7 +171,7 @@ export default function App() {
           throw new Error(`Movie request failed: ${response.status}`);
         }
 
-        const data = await response.json();
+        const data = await readResponse(response);
 
         if (!Array.isArray(data)) {
           throw new Error("The movie API did not return a list.");
@@ -185,27 +193,95 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const movieCount = movieTitles.length;
+    if (!currentUser) {
+      setWatchlist([]);
+      setFavorites([]);
+      setWatchHistory([]);
+      return undefined;
+    }
 
-    if (movieCount === 0) {
+    let ignoreResult = false;
+
+    async function loadAccountLists() {
+      try {
+        const [watchlistResponse, favoritesResponse, historyResponse] =
+          await Promise.all([
+            fetch("/api/watchlist/", {
+              credentials: "same-origin",
+            }),
+            fetch("/api/favorites/", {
+              credentials: "same-origin",
+            }),
+            fetch("/api/history/", {
+              credentials: "same-origin",
+            }),
+          ]);
+
+        if (!watchlistResponse.ok) {
+          throw new Error(
+            `Watchlist request failed: ${watchlistResponse.status}`
+          );
+        }
+
+        if (!favoritesResponse.ok) {
+          throw new Error(
+            `Favorites request failed: ${favoritesResponse.status}`
+          );
+        }
+
+        if (!historyResponse.ok) {
+          throw new Error(
+            `History request failed: ${historyResponse.status}`
+          );
+        }
+
+        const [watchlistData, favoritesData, historyData] =
+          await Promise.all([
+            readResponse(watchlistResponse),
+            readResponse(favoritesResponse),
+            readResponse(historyResponse),
+          ]);
+
+        if (ignoreResult) {
+          return;
+        }
+
+        setWatchlist(
+          watchlistData.map((movie) => `database-${movie.id}`)
+        );
+        setFavorites(
+          favoritesData.map((movie) => `database-${movie.id}`)
+        );
+        setWatchHistory(
+          historyData.map((entry) => ({
+            ...entry,
+            movie: mapDatabaseTitle(entry.movie),
+          }))
+        );
+      } catch (error) {
+        console.error("Could not load your account lists:", error);
+      }
+    }
+
+    loadAccountLists();
+
+    return () => {
+      ignoreResult = true;
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (movieTitles.length === 0) {
       setSlide(0);
       return undefined;
     }
 
     const timer = setInterval(() => {
-      setSlide((currentSlide) => (currentSlide + 1) % movieCount);
+      setSlide((currentSlide) => (currentSlide + 1) % movieTitles.length);
     }, 4000);
 
     return () => clearInterval(timer);
   }, [movieTitles.length]);
-
-  useEffect(() => {
-    localStorage.setItem("cinema-watchlist", JSON.stringify(watchlist));
-  }, [watchlist]);
-
-  useEffect(() => {
-    localStorage.setItem("cinema-favorites", JSON.stringify(favorites));
-  }, [favorites]);
 
   const featuredMovie =
     movieTitles.length > 0
@@ -221,7 +297,11 @@ export default function App() {
   } else if (activePage === "Animation") {
     pageTitles = animationTitles;
   } else if (activePage === "Favorites") {
-    pageTitles = allTitles.filter((title) => favorites.includes(title.id));
+    pageTitles = allTitles.filter((title) =>
+      favorites.includes(title.id)
+    );
+  } else if (activePage === "Watch History") {
+    pageTitles = watchHistory.map((entry) => entry.movie);
   }
 
   const visibleTitles = pageTitles.filter((title) => {
@@ -237,9 +317,17 @@ export default function App() {
     return matchesGenre && matchesSearch;
   });
 
+  function openPage(page) {
+    setActivePage(page);
+    setSearch("");
+    setSelectedGenre("All");
+    setMenuOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function handleLoginSuccess(user, token) {
     setCurrentUser(user);
-    setCsrfToken(token);
+    setCsrfToken(token || "");
     setActivePage("Home");
     setMenuOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -255,7 +343,7 @@ export default function App() {
         },
       });
 
-      const data = await response.json();
+      const data = await readResponse(response);
 
       if (!response.ok) {
         throw new Error(data.detail || "Could not log out.");
@@ -269,20 +357,151 @@ export default function App() {
     }
   }
 
-  function toggleItem(list, setList, id) {
-    setList(
-      list.includes(id)
-        ? list.filter((itemId) => itemId !== id)
-        : [...list, id]
-    );
+  async function toggleWatchlist(movie) {
+    if (!currentUser) {
+      alert("Please log in to save titles to your account watchlist.");
+      openPage("Login");
+      return;
+    }
+
+    if (!movie.databaseId) {
+      alert("This title must be added in Django Admin before it can be saved to your account.");
+      return;
+    }
+
+    const isSaved = watchlist.includes(movie.id);
+    const method = isSaved ? "DELETE" : "POST";
+
+    try {
+      const response = await fetch("/api/watchlist/", {
+        method,
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        body: JSON.stringify({ movie_id: movie.databaseId }),
+      });
+
+      const data = await readResponse(response);
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not update your watchlist.");
+      }
+
+      setWatchlist((current) =>
+        isSaved
+          ? current.filter((id) => id !== movie.id)
+          : [...current, movie.id]
+      );
+    } catch (error) {
+      alert(error.message || "Could not connect to the server.");
+    }
   }
 
-  function openPage(page) {
-    setActivePage(page);
-    setSearch("");
-    setSelectedGenre("All");
-    setMenuOpen(false);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  async function toggleFavorite(movie) {
+    if (!currentUser) {
+      alert("Please log in to save favorites to your account.");
+      openPage("Login");
+      return;
+    }
+
+    if (!movie.databaseId) {
+      alert("This title must be added in Django Admin before it can be saved as a favorite.");
+      return;
+    }
+
+    const isFavorite = favorites.includes(movie.id);
+    const method = isFavorite ? "DELETE" : "POST";
+
+    try {
+      const response = await fetch("/api/favorites/", {
+        method,
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        body: JSON.stringify({ movie_id: movie.databaseId }),
+      });
+
+      const data = await readResponse(response);
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not update your favorites.");
+      }
+
+      setFavorites((current) =>
+        isFavorite
+          ? current.filter((id) => id !== movie.id)
+          : [...current, movie.id]
+      );
+    } catch (error) {
+      alert(error.message || "Could not connect to the server.");
+    }
+  }
+
+  async function saveWatchHistory(movie, positionSeconds, completed) {
+    if (!currentUser || !movie.databaseId) {
+      return;
+    }
+
+    try {
+      const response = await fetch("/api/history/", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        body: JSON.stringify({
+          movie_id: movie.databaseId,
+          position_seconds: positionSeconds,
+          completed,
+        }),
+      });
+
+      const data = await readResponse(response);
+
+      if (!response.ok) {
+        throw new Error(data.detail || "Could not save watch history.");
+      }
+
+      setWatchHistory((current) => {
+        const previousEntry = current.find(
+          (entry) => entry.movie.id === movie.id
+        );
+
+        const updatedEntry = {
+          movie,
+          position_seconds: positionSeconds,
+          completed,
+          last_watched_at: new Date().toISOString(),
+        };
+
+        return [
+          updatedEntry,
+          ...current.filter((entry) => entry.movie.id !== movie.id),
+        ];
+      });
+    } catch (error) {
+      console.error("Could not save watch history:", error);
+    }
+  }
+
+  function renderMovieCard(movie, rank) {
+    return (
+      <MovieCard
+        key={movie.id}
+        movie={movie}
+        rank={rank}
+        saved={watchlist.includes(movie.id)}
+        favorite={favorites.includes(movie.id)}
+        onSave={() => toggleWatchlist(movie)}
+        onFavorite={() => toggleFavorite(movie)}
+        onWatchHistory={saveWatchHistory}
+      />
+    );
   }
 
   const isAuthPage = activePage === "Login" || activePage === "Register";
@@ -397,7 +616,6 @@ export default function App() {
                 <div className="hero-content">
                   <span className="eyebrow">FEATURED</span>
                   <h1>{featuredMovie.title}</h1>
-
                   <p className="hero-meta">
                     {featuredMovie.year} · ★ {featuredMovie.rating}
                   </p>
@@ -471,66 +689,80 @@ export default function App() {
 
             {visibleTitles.length > 0 ? (
               <div className="movie-grid">
-                {visibleTitles.map((title) => (
-                  <MovieCard
-                    key={title.id}
-                    movie={title}
-                    rank={activePage === "Home" ? title.rank : undefined}
-                    saved={watchlist.includes(title.id)}
-                    favorite={favorites.includes(title.id)}
-                    onSave={() =>
-                      toggleItem(watchlist, setWatchlist, title.id)
-                    }
-                    onFavorite={() =>
-                      toggleItem(favorites, setFavorites, title.id)
-                    }
-                  />
-                ))}
+                {visibleTitles.map((movie) =>
+                  renderMovieCard(
+                    movie,
+                    activePage === "Home" ? movie.rank : undefined
+                  )
+                )}
               </div>
             ) : (
               <p className="empty-message">
                 {activePage === "Favorites"
                   ? "You haven’t favorited any titles yet. Tap the heart on a card to add one."
-                  : "No titles found."}
+                  : activePage === "Watch History"
+                    ? "Your watch history will appear here after you watch a title."
+                    : "No titles found."}
               </p>
             )}
           </section>
 
           {activePage === "Home" && (
             <>
-              <section className="section watchlist-section">
-                <div className="section-heading">
-                  <div>
-                    <span className="eyebrow">SAVED FOR LATER</span>
-                    <h2>My Watchlist</h2>
+              {currentUser && (
+                <section className="section watchlist-section">
+                  <div className="section-heading">
+                    <div>
+                      <span className="eyebrow">SAVED FOR LATER</span>
+                      <h2>My Watchlist</h2>
+                    </div>
                   </div>
-                </div>
 
-                {allTitles.some((title) => watchlist.includes(title.id)) ? (
-                  <div className="movie-grid">
-                    {allTitles
-                      .filter((title) => watchlist.includes(title.id))
-                      .map((title) => (
-                        <MovieCard
-                          key={title.id}
-                          movie={title}
-                          saved
-                          favorite={favorites.includes(title.id)}
-                          onSave={() =>
-                            toggleItem(watchlist, setWatchlist, title.id)
-                          }
-                          onFavorite={() =>
-                            toggleItem(favorites, setFavorites, title.id)
-                          }
-                        />
-                      ))}
+                  {allTitles.some((title) =>
+                    watchlist.includes(title.id)
+                  ) ? (
+                    <div className="movie-grid">
+                      {allTitles
+                        .filter((title) => watchlist.includes(title.id))
+                        .map((movie) => renderMovieCard(movie))}
+                    </div>
+                  ) : (
+                    <p className="empty-message">
+                      Add a title above to start your account watchlist.
+                    </p>
+                  )}
+                </section>
+              )}
+
+              {currentUser && (
+                <section className="section">
+                  <div className="section-heading">
+                    <div>
+                      <span className="eyebrow">RECENTLY WATCHED</span>
+                      <h2>Watch History</h2>
+                    </div>
+                    <button
+                      type="button"
+                      className="footer-top-link"
+                      onClick={() => openPage("Watch History")}
+                    >
+                      View all
+                    </button>
                   </div>
-                ) : (
-                  <p className="empty-message">
-                    Add a title above to start your watchlist.
-                  </p>
-                )}
-              </section>
+
+                  {watchHistory.length > 0 ? (
+                    <div className="movie-grid">
+                      {watchHistory
+                        .slice(0, 5)
+                        .map((entry) => renderMovieCard(entry.movie))}
+                    </div>
+                  ) : (
+                    <p className="empty-message">
+                      Your watched titles will appear here.
+                    </p>
+                  )}
+                </section>
+              )}
 
               <section className="section">
                 <div className="section-heading">
@@ -545,20 +777,9 @@ export default function App() {
 
                 {upcomingMovies.length > 0 ? (
                   <div className="movie-grid">
-                    {upcomingMovies.map((movie) => (
-                      <MovieCard
-                        key={movie.id}
-                        movie={movie}
-                        saved={watchlist.includes(movie.id)}
-                        favorite={favorites.includes(movie.id)}
-                        onSave={() =>
-                          toggleItem(watchlist, setWatchlist, movie.id)
-                        }
-                        onFavorite={() =>
-                          toggleItem(favorites, setFavorites, movie.id)
-                        }
-                      />
-                    ))}
+                    {upcomingMovies.map((movie) =>
+                      renderMovieCard(movie)
+                    )}
                   </div>
                 ) : (
                   <p className="empty-message">
@@ -570,7 +791,9 @@ export default function App() {
               <section className="features-section">
                 <div className="features-grid">
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">🌍</span>
+                    <span className="feature-symbol" aria-hidden="true">
+                      🌍
+                    </span>
                     <h3>Works Worldwide</h3>
                     <p>
                       Discover movies and shows from countries around the
@@ -579,7 +802,9 @@ export default function App() {
                   </article>
 
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">🎬</span>
+                    <span className="feature-symbol" aria-hidden="true">
+                      🎬
+                    </span>
                     <h3>Thousands of Titles</h3>
                     <p>
                       Browse movies, shows, documentaries, sports, and more.
@@ -587,13 +812,17 @@ export default function App() {
                   </article>
 
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">✓</span>
+                    <span className="feature-symbol" aria-hidden="true">
+                      ✓
+                    </span>
                     <h3>Always 100% Free</h3>
                     <p>Explore titles without a payment or subscription.</p>
                   </article>
 
                   <article className="feature-card">
-                    <span className="feature-symbol" aria-hidden="true">📱</span>
+                    <span className="feature-symbol" aria-hidden="true">
+                      📱
+                    </span>
                     <h3>Device-Friendly</h3>
                     <p>
                       Enjoy MovieBox on phones, tablets, computers, and TVs.
@@ -627,16 +856,26 @@ export default function App() {
                   className="streaming-platforms"
                   aria-label="Streaming platforms"
                 >
-                  <span className="platform-badge platform-netflix">Netflix</span>
-                  <span className="platform-badge platform-prime">prime video</span>
-                  <span className="platform-badge platform-disney">Disney+</span>
-                  <span className="platform-badge platform-apple">Apple TV+</span>
+                  <span className="platform-badge platform-netflix">
+                    Netflix
+                  </span>
+                  <span className="platform-badge platform-prime">
+                    prime video
+                  </span>
+                  <span className="platform-badge platform-disney">
+                    Disney+
+                  </span>
+                  <span className="platform-badge platform-apple">
+                    Apple TV+
+                  </span>
                   <span className="platform-badge platform-max">Max</span>
                   <span className="platform-badge platform-hulu">hulu</span>
                   <span className="platform-badge platform-paramount">
                     Paramount+
                   </span>
-                  <span className="platform-badge platform-peacock">peacock</span>
+                  <span className="platform-badge platform-peacock">
+                    peacock
+                  </span>
                 </div>
               </section>
 
@@ -673,17 +912,22 @@ export default function App() {
 
           <div className="footer-column">
             <h3>Explore</h3>
-            {["Home", "Movies", "Web Series", "Animation", "Favorites"].map(
-              (page) => (
-                <button
-                  key={page}
-                  type="button"
-                  onClick={() => openPage(page)}
-                >
-                  {page}
-                </button>
-              )
-            )}
+            {[
+              "Home",
+              "Movies",
+              "Web Series",
+              "Animation",
+              "Favorites",
+              "Watch History",
+            ].map((page) => (
+              <button
+                key={page}
+                type="button"
+                onClick={() => openPage(page)}
+              >
+                {page}
+              </button>
+            ))}
           </div>
 
           <div className="footer-column">
@@ -706,13 +950,15 @@ export default function App() {
           <div className="footer-note">
             <h3>Your movie space</h3>
             <p>
-              Use the search bar to find a title. Save it to your watchlist or
-              tap the heart to add it to Favorites.
+              Search for a title, save it to your watchlist, or tap the heart
+              to add it to Favorites.
             </p>
             <button
               type="button"
               className="footer-top-link"
-              onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+              onClick={() =>
+                window.scrollTo({ top: 0, behavior: "smooth" })
+              }
             >
               Back to top ↑
             </button>

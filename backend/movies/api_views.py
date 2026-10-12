@@ -5,12 +5,13 @@ from django.contrib.auth import (
     logout as django_logout,
 )
 from django.middleware.csrf import get_token
+from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
-from .models import Movie
+from .models import Favorite, Movie, WatchHistory, Watchlist
 from .serializers import MovieSerializer, RegistrationSerializer
 
 
@@ -102,6 +103,143 @@ def current_user(request):
 def user_logout(request):
     django_logout(request._request)
     return Response({"message": "You are logged out."})
+
+
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def favorites(request):
+    if request.method == "GET":
+        entries = (
+            Favorite.objects.filter(user=request.user)
+            .select_related("movie")
+        )
+        serializer = MovieSerializer(
+            [entry.movie for entry in entries],
+            many=True,
+            context={"request": request},
+        )
+        return Response(serializer.data)
+
+    try:
+        movie_id = int(request.data.get("movie_id"))
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "Send a valid movie_id."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    movie = get_object_or_404(Movie, pk=movie_id)
+
+    if request.method == "POST":
+        Favorite.objects.get_or_create(user=request.user, movie=movie)
+        return Response(
+            {"message": "Favorite saved.", "movie_id": movie.id},
+            status=status.HTTP_200_OK,
+        )
+
+    Favorite.objects.filter(user=request.user, movie=movie).delete()
+    return Response(
+        {"message": "Favorite removed.", "movie_id": movie.id},
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["GET", "POST", "DELETE"])
+@permission_classes([IsAuthenticated])
+def watchlist_api(request):
+    if request.method == "GET":
+        entries = (
+            Watchlist.objects.filter(user=request.user)
+            .select_related("movie")
+        )
+        serializer = MovieSerializer(
+            [entry.movie for entry in entries],
+            many=True,
+            context={"request": request},
+        )
+        return Response(serializer.data)
+
+    try:
+        movie_id = int(request.data.get("movie_id"))
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "Send a valid movie_id."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    movie = get_object_or_404(Movie, pk=movie_id)
+
+    if request.method == "POST":
+        Watchlist.objects.get_or_create(user=request.user, movie=movie)
+        return Response(
+            {"message": "Watchlist saved.", "movie_id": movie.id},
+            status=status.HTTP_200_OK,
+        )
+
+    Watchlist.objects.filter(user=request.user, movie=movie).delete()
+    return Response(
+        {"message": "Removed from watchlist.", "movie_id": movie.id},
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["GET", "POST"])
+@permission_classes([IsAuthenticated])
+def watch_history(request):
+    if request.method == "GET":
+        entries = (
+            WatchHistory.objects.filter(user=request.user)
+            .select_related("movie")
+        )
+        history = []
+
+        for entry in entries:
+            movie_data = MovieSerializer(
+                entry.movie,
+                context={"request": request},
+            ).data
+            history.append(
+                {
+                    "movie": movie_data,
+                    "last_watched_at": entry.last_watched_at,
+                    "position_seconds": entry.position_seconds,
+                    "completed": entry.completed,
+                }
+            )
+
+        return Response(history)
+
+    try:
+        movie_id = int(request.data.get("movie_id"))
+        position_seconds = int(request.data.get("position_seconds", 0))
+    except (TypeError, ValueError):
+        return Response(
+            {"detail": "Send a valid movie_id and position_seconds."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if position_seconds < 0:
+        return Response(
+            {"detail": "position_seconds cannot be negative."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    movie = get_object_or_404(Movie, pk=movie_id)
+    completed = request.data.get("completed", False)
+
+    WatchHistory.objects.update_or_create(
+        user=request.user,
+        movie=movie,
+        defaults={
+            "position_seconds": position_seconds,
+            "completed": completed,
+        },
+    )
+
+    return Response(
+        {"message": "Watch history saved.", "movie_id": movie.id},
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(["GET"])

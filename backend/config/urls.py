@@ -5,10 +5,13 @@ from django.urls import path
 from movies.api_views import (
     csrf_token,
     current_user,
+    favorites,
     movie_list,
     register,
     user_login,
     user_logout,
+    watch_history,
+    watchlist_api,
 )
 
 urlpatterns = [
@@ -19,6 +22,9 @@ urlpatterns = [
     path("api/logout/", user_logout, name="logout"),
     path("api/me/", current_user, name="current-user"),
     path("api/movies/", movie_list, name="movie-list"),
+    path("api/favorites/", favorites, name="favorites"),
+    path("api/history/", watch_history, name="watch-history"),
+    path("api/watchlist/", watchlist_api, name="watchlist"),
 ]
 
 if settings.DEBUG:

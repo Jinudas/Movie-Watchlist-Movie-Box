@@ -71,3 +71,55 @@ class WatchHistory(models.Model):
 
     def __str__(self):
         return f"{self.user} watched {self.movie}"
+
+
+class Favorite(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="movie_favorites",
+    )
+    movie = models.ForeignKey(
+        Movie,
+        on_delete=models.CASCADE,
+        related_name="user_favorites",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "movie"],
+                name="uniq_user_favorite",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user} favorited {self.movie}"
+
+
+class Watchlist(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="watchlist_items",
+    )
+    movie = models.ForeignKey(
+        Movie,
+        on_delete=models.CASCADE,
+        related_name="in_watchlists",
+    )
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-added_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "movie"),
+                name="uniq_user_movie_watchlist",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user} saved {self.movie}"
