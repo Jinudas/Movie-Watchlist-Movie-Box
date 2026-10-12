@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 export default function MovieCard({
   movie,
@@ -6,9 +6,53 @@ export default function MovieCard({
   favorite,
   onSave,
   onFavorite,
+  onWatchHistory,
   rank,
 }) {
   const [playerOpen, setPlayerOpen] = useState(false);
+  const videoRef = useRef(null);
+  const lastSavedSecond = useRef(0);
+
+  function openPlayer() {
+    lastSavedSecond.current = 0;
+    onWatchHistory?.(movie, 0, false);
+    setPlayerOpen(true);
+  }
+
+  function saveProgress(event) {
+    const seconds = Math.floor(event.currentTarget.currentTime);
+
+    // Save progress at most once every 10 seconds.
+    if (seconds - lastSavedSecond.current >= 10) {
+      lastSavedSecond.current = seconds;
+      onWatchHistory?.(movie, seconds, false);
+    }
+  }
+
+  function closePlayer() {
+    if (videoRef.current) {
+      onWatchHistory?.(
+        movie,
+        Math.floor(videoRef.current.currentTime),
+        false
+      );
+    }
+    setPlayerOpen(false);
+  }
+
+  function finishVideo() {
+    const seconds = videoRef.current
+      ? Math.floor(videoRef.current.duration || videoRef.current.currentTime)
+      : 0;
+
+    onWatchHistory?.(movie, seconds, true);
+  }
+
+  function recordExternalWatchClick() {
+    // The app can record the click, but the external service does not share
+    // playback progress with this website.
+    onWatchHistory?.(movie, 0, false);
+  }
 
   return (
     <>
@@ -51,7 +95,7 @@ export default function MovieCard({
             <button
               type="button"
               className="watch-now-button"
-              onClick={() => setPlayerOpen(true)}
+              onClick={openPlayer}
             >
               ▶ Watch now
             </button>
@@ -61,6 +105,7 @@ export default function MovieCard({
               href={movie.watchUrl}
               target="_blank"
               rel="noreferrer"
+              onClick={recordExternalWatchClick}
             >
               ▶ Watch now
             </a>
@@ -72,7 +117,7 @@ export default function MovieCard({
         <div
           className="video-modal-backdrop"
           role="presentation"
-          onClick={() => setPlayerOpen(false)}
+          onClick={closePlayer}
         >
           <section
             className="video-modal"
@@ -84,18 +129,21 @@ export default function MovieCard({
             <button
               type="button"
               className="video-modal-close"
-              onClick={() => setPlayerOpen(false)}
+              onClick={closePlayer}
               aria-label="Close video player"
             >
               ×
             </button>
 
             <video
+              ref={videoRef}
               className="video-player"
               src={movie.videoUrl}
               controls
               autoPlay
               playsInline
+              onTimeUpdate={saveProgress}
+              onEnded={finishVideo}
             >
               Your browser does not support video playback.
             </video>
